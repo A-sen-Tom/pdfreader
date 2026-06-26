@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 智能点读机 (macOS 系统词典)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
+     
+    <style>
+        /* --- 极致自适应液态磨砂主题 (Liquid Frosted Theme) --- */
+        :root {
+            --bg-blur: blur(25px);
+            --card-bg: rgba(255, 255, 255, 0.9);
+            --card-border: rgba(0, 0, 0, 0.1);
+            --text-color: #1a1a1a;
+            --text-muted: rgba(26, 26, 26, 0.45);
+            --shadow: 0 20px 50px rgba(0, 0, 0, 0.1);
+            --color-cursor: #0284c7;   /* 深天蓝(白底适配) */
+            --color-correct: #10b981;  /* 璀璨流翠 */
+            --color-wrong: #ef4444;    /* 警示绯红 */
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: var(--text-color);
+            background-color: #ffffff;
+        }
+
+        /* --- 动态流体背景层 --- */
+        .fluid-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -2;
+            overflow: hidden;
+            background: #ffffff;
+        }
+
+        .circle {
+            display: none;
+        }
+
+        /* 5个绝对定位的色彩斑斓圆圈 */
+        .circle-1 { width: max(35vw, 35vh); height: max(35vw, 35vh); background: #10b981; top: -10%; left: -10%; animation-delay: 0s; }
+        .circle-2 { width: max(40vw, 40vh); height: max(40vw, 40vh); background: #8b5cf6; top: -15%; right: -10%; animation-delay: -4s; }
+        .circle-3 { width: max(38vw, 38vh); height: max(38vw, 38vh); background: #0ea5e9; bottom: -10%; left: -5%; animation-delay: -8s; }
+        .circle-4 { width: max(35vw, 35vh); height: max(35vw, 35vh); background: #ec4899; bottom: -10%; right: -5%; animation-delay: -12s; }
+        .circle-5 { width: max(45vw, 45vh); height: max(45vw, 45vh); background: #f59e0b; top: 25%; left: 25%; animation-delay: -16s; }
+
+        @keyframes floatMove {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(8%, 12%) scale(1.15); }
+        }
+
+        .frosted-overlay {
+            display: none;
+        }
+
+        /* --- 主体全屏布局 --- */
+        .main-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .pdf-panel {
+            width: 100%;
+            height: 100%;
+            overflow-y: auto;
+            overflow-x: hidden;
+            background: #ffffff;
+            transition: background 0.3s;
+            position: relative;
+        }
+
+        /* 当 PDF 面板处于深色（反色）模式时，底层背景恢复为深色，让闪烁变成暗色闪烁 */
+        .pdf-panel.invert-mode {
+            background: rgba(10, 15, 30, 0.6);
+        }
+
+        .pdf-viewer-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+        }
+
+        .pdf-page-container {
+            position: relative;
+            margin: 0 auto;
+            padding: 0;
+            line-height: 0;
+            background: #ffffff;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            /* 移除了 width: 100% !important，强制容器与 Canvas 像素绝对绑定，避免拖拽时剥离 */
+        }
+
+        .pdf-page-container canvas {
+            display: block;
+            /* 移除了 width: 100% 和 height: auto，防止 Canvas 橡皮筋伸缩而文字层不伸缩 */
+            transition: filter 0.3s ease;
+            mix-blend-mode: multiply;
+        }
+
+        .pdf-panel.invert-mode canvas {
+            filter: invert(0.9) hue-rotate(180deg);
+        }
+
+
+        @keyframes fadeInCanvas {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .textLayer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            opacity: 1;
+            line-height: 1.0;
+            pointer-events: auto;
+        }
+        
+        .textLayer span {
+            color: transparent;
+            position: absolute;
+            white-space: pre;
+            cursor: text;
+            transform-origin: 0% 0%;
+            border-radius: 2px;
+        }
+        
+        .textLayer span::selection {
+            background: rgba(56, 189, 248, 0.4);
+        }
+
+        /* --- iOS 专属：无痕隐形点读模式 --- */
+        body.ios-mode .textLayer {
+            -webkit-touch-callout: none !important; /* 禁用长按弹出复制菜单 */
+        }
+        body.ios-mode .textLayer span::selection {
+            background: transparent !important; /* 彻底透明化 iOS 的系统蓝条 */
+        }
+
+
+
+        .btn-action {
+            background: var(--color-cursor);
+            color: #040814;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-action:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.5);
+        }
+
+        .floating-toolbar {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 50;
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border-radius: 24px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+            border: 1px solid rgba(0,0,0,0.08);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        #pdf-file-picker { display: none; }
+
+        .loading-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            display: none;
+            background: rgba(255,255,255,0.9);
+            padding: 20px 4px;
+            border-radius: 12px;
+            width: 200px;
+            border: 1px solid var(--card-border);
+            z-index: 100;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(0,0,0,0.1);
+            border-top-color: var(--color-cursor);
+            border-radius: 50%;
+            animation: spin 1s infinite linear;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .welcome-box {
+            text-align: center;
+            padding: 40px 20px;
+            width: 100%;
+            color: #1a1a1a;
+            transition: color 0.3s;
+        }
+
+        .pdf-panel.invert-mode .welcome-box {
+            color: #f8fafc; /* 深色模式反转为浅色字 */
+        }
+
+        #guide-container {
+            margin-top: 25px; 
+            padding: 20px; 
+            background: rgba(0, 0, 0, 0.04); 
+            border-radius: 12px; 
+            text-align: left; 
+            font-size: 0.9rem; 
+            line-height: 1.6; 
+            max-height: 300px; 
+            overflow-y: auto; 
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            transition: all 0.3s;
+        }
+
+        .pdf-panel.invert-mode #guide-container {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+
+
+
+
+
+
+
+
+
+
+<link rel="manifest" href="manifest.json">
+<script>
+if("service-worker" in navigator) navigator.serviceWorker.register("sw.js");
+</script>
+</head>
+<body>
+
+    <div class="fluid-bg">
+        <div class="circle circle-1"></div>
+        <div class="circle circle-2"></div>
+        <div class="circle circle-3"></div>
+        <div class="circle circle-4"></div>
+        <div class="circle circle-5"></div>
+    </div>
+    <div class="frosted-overlay"></div>
+
+    <div class="main-container">
+        
+        <div class="pdf-panel" id="pdfPanel">
+            <div class="pdf-viewer-content" id="pdfViewerContent">
+            </div>
+            
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+                <div style="font-size: 0.9rem; color: #1a1a1a;" id="loading-text">正在解析文献结构...</div>
+            </div>
+        </div>
+
+        <div class="floating-toolbar" id="floatingToolbar">
+            <button class="btn-action" onclick="document.getElementById('pdf-file-picker').click()">📂 PDF</button>
+            <button class="btn-action" style="background: #0ea5e9; color: white;" onclick="toggleFullscreen()" id="fullscreenBtn">⛶ 全屏</button>
+            <input type="file" id="pdf-file-picker" accept="application/pdf,.pdf" multiple>
+        </div>
+
+    </div>
+
+    <script>
+        // 配置 PDF.js Worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        let currentPdfDoc = null;
+        let pageObserver = null;
+
+        const CLICK_Y_OFFSET = 0;
+
+        const pdfPanel = document.getElementById('pdfPanel');
+        const pdfViewerContent = document.getElementById('pdfViewerContent');
+        const filePicker = document.getElementById('pdf-file-picker');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+
+        // 2. 深度检索数据库 (含词态还原逻辑) — 纯查询，返回结果对象
+
+        function lookupInDict(word) {
+            window.open('dict://' + encodeURIComponent(word), '_blank');
+        }
+
+        // 获取当前视野里最靠上的页面索引，用于重绘后精确定位
+        function findCurrentVisiblePage() {
+            const containers = document.querySelectorAll('.pdf-page-container');
+            let bestPage = 1;
+            let minTop = Infinity;
+            containers.forEach(el => {
+                const rect = el.getBoundingClientRect();
+                const dist = Math.abs(rect.top);
+                if (dist < minTop) {
+                    minTop = dist;
+                    bestPage = parseInt(el.dataset.pageNumber);
+                }
+            });
+            return bestPage;
+        }
+
+        // 4. ✅ 修复核心：PDF 智能虚拟懒加载 (防内存溢出)
+        filePicker.addEventListener('change', (e) => {
+            const file = e.target.files[0] || (e.target.files.length > 0 ? e.target.files[0] : null);
+            if (!file) return;
+            loadingOverlay.style.display = 'block';
+            document.getElementById('loading-text').innerText = "正在解析文档结构...";
+            
+            const fileReader = new FileReader();
+            fileReader.onload = function() {
+                const typedarray = new Uint8Array(this.result);
+                pdfjsLib.getDocument(typedarray).promise.then((pdf) => {
+                    currentPdfDoc = pdf;
+                    initVirtualRender(1);
+                }).catch(err => {
+                    alert("PDF解析失败: " + err.message);
+                    loadingOverlay.style.display = 'none';
+                });
+            };
+            fileReader.readAsArrayBuffer(file);
+        });
+
+        async function initVirtualRender(targetPageNum = 1) {
+            if (!currentPdfDoc) return;
+            loadingOverlay.style.display = 'block';
+            pdfViewerContent.innerHTML = '';
+            
+            // 如果之前有观察者，先断开
+            if (pageObserver) pageObserver.disconnect();
+
+            const containerWidth = pdfPanel.clientWidth;
+            
+            // 预先抓取第 1 页的尺寸，用来预估其他页面的高度，撑开正确的系统滚动条
+            let estimatedRatio = 1.414; 
+            try {
+                const page1 = await currentPdfDoc.getPage(1);
+                const vp = page1.getViewport({ scale: 1 });
+                estimatedRatio = vp.height / vp.width;
+            } catch(e) {}
+            const estimatedHeight = containerWidth * estimatedRatio;
+
+            // 1. 先瞬间生成所有页面的“骨架”（div外壳），不画 Canvas
+            for (let pageNum = 1; pageNum <= currentPdfDoc.numPages; pageNum++) {
+                const pageContainer = document.createElement('div');
+                pageContainer.className = 'pdf-page-container';
+                pageContainer.id = `page-container-${pageNum}`;
+                pageContainer.dataset.pageNumber = pageNum;
+                pageContainer.dataset.rendered = 'false';
+                pageContainer.style.height = `${estimatedHeight}px`; // 预撑开高度，防止滚动乱跳
+                
+                pdfViewerContent.appendChild(pageContainer);
+            }
+
+            // 瞬间切换到目标页面位置，彻底取消滚动过渡平滑
+            if (targetPageNum > 1) {
+                const targetEl = document.getElementById(`page-container-${targetPageNum}`);
+                if (targetEl) {
+                    pdfPanel.scrollTo({ top: targetEl.offsetTop, behavior: 'instant' });
+                }
+            }
+
+            loadingOverlay.style.display = 'none';
+
+            // 2. 配置 Intersection Observer 懒加载引擎
+            // 触发条件：当页面骨架进入视野，或即将进入视野（上下各多预留 150% 的缓冲高度）时渲染
+            pageObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    const container = entry.target;
+                    if (entry.isIntersecting) {
+                        if (container.dataset.rendered === 'false') {
+                            container.dataset.rendered = 'true';
+                            renderSinglePage(container, parseInt(container.dataset.pageNumber), containerWidth);
+                        }
+                    } else {
+                        // 核心：自动释放视野外内存，防止崩溃
+                        if (container.dataset.rendered === 'true') {
+                            container.innerHTML = '';
+                            container.dataset.rendered = 'false';
+                        }
+                    }
+                });
+            }, { 
+                root: pdfPanel, 
+                rootMargin: '100% 0px 100% 0px' // 缩短预加载范围，兼顾性能与流畅度
+            });
+
+            // 把所有页面骨架送进观察器
+            document.querySelectorAll('.pdf-page-container').forEach(el => pageObserver.observe(el));
+
+            // 强制重置观察者，确保定位后立刻触发当前页渲染，防止白屏或字体错位
+            setTimeout(() => {
+                if (pageObserver) {
+                    document.querySelectorAll('.pdf-page-container').forEach(el => {
+                        pageObserver.unobserve(el);
+                        pageObserver.observe(el);
+                    });
+                }
+            }, 50);
+        }
+
+        async function renderSinglePage(container, pageNum, containerWidth) {
+            try {
+                // 渲染前清空，防止重复渲染叠加导致的坐标偏移
+                container.innerHTML = ''; 
+                const page = await currentPdfDoc.getPage(pageNum);
+                
+                // 实时计算当前容器宽度，解决拖拽后识别偏移问题
+                const currentWidth = pdfPanel.clientWidth;
+                const unscaledViewport = page.getViewport({ scale: 1 });
+                const scale = currentWidth / unscaledViewport.width;
+                const viewport = page.getViewport({ scale: scale });
+
+                container.style.width = `${viewport.width}px`;
+                container.style.height = `${viewport.height}px`;
+                // 这里的变量必须与 PDF.js 内部 textLayer 的 CSS 预期一致
+                container.style.setProperty('--scale-factor', scale);
+
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                
+                // 🚀 核心高清化：获取设备像素比 (Retina 屏幕深度适配)
+                const outputScale = window.devicePixelRatio || 1;
+                
+                // 设置 Canvas 内部实际绘图分辨率 (按倍数放大)
+                canvas.width = Math.floor(viewport.width * outputScale);
+                canvas.height = Math.floor(viewport.height * outputScale);
+                
+                // 设置 Canvas 外部实际显示的 CSS 尺寸 (移除 Math.floor 防亚像素错位)
+                canvas.style.width = viewport.width + "px";
+                canvas.style.height = viewport.height + "px";
+                
+                container.appendChild(canvas);
+
+                const textLayerDiv = document.createElement('div');
+                textLayerDiv.className = 'textLayer';
+                // 确保 textLayer 尺寸与显示尺寸绝对一致
+                textLayerDiv.style.width = viewport.width + "px";
+                textLayerDiv.style.height = viewport.height + "px";
+                container.appendChild(textLayerDiv);
+
+                // 将放大倍数写入渲染引擎的矩阵变换中
+                const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+
+                await page.render({ 
+                    canvasContext: context, 
+                    transform: transform,
+                    viewport: viewport 
+                }).promise;
+
+                let textContent = await page.getTextContent();
+                
+                // 📸 核心机制：严格扫描版判断条件 (过滤掉扫描仪自动生成的幽灵字符，降低误伤率)
+                const validTextCount = textContent ? textContent.items.filter(item => item.str.trim().length > 0).length : 0;
+                
+                if (validTextCount >= 5) {
+                    pdfjsLib.renderTextLayer({
+                        textContent: textContent,
+                        container: textLayerDiv,
+                        viewport: viewport,
+                        textDivs: []
+                    });
+                }
+            } catch (error) {
+                console.error(`渲染第 ${pageNum} 页时发生故障:`, error);
+            }
+        }
+
+        // 5. 事件委托 (优化点读精度与自动偏移校准)
+        pdfViewerContent.addEventListener('click', (e) => {
+            const isIOS = document.body.classList.contains('ios-mode');
+
+            // 1. 获取点击处的精确文本（通过浏览器 Range API 替代手动计算）
+            let range, textNode, offset;
+            const adjustedY = e.clientY + CLICK_Y_OFFSET;
+
+            if (document.caretRangeFromPoint) {
+                range = document.caretRangeFromPoint(e.clientX, adjustedY);
+            } else if (document.caretPositionFromPoint) {
+                const pos = document.caretPositionFromPoint(e.clientX, adjustedY);
+                if (pos) {
+                    range = document.createRange();
+                    range.setStart(pos.offsetNode, pos.offset);
+                    range.collapse(true);
+                }
+            }
+
+            if (range && range.startContainer.nodeType === Node.TEXT_NODE) {
+                textNode = range.startContainer;
+                offset = range.startOffset;
+                const text = textNode.textContent;
+
+                // 向前后寻找单词边界
+                const isWordChar = (char) => /[a-zA-Z0-9'-]/.test(char);
+                let start = offset;
+                let end = offset;
+                while (start > 0 && isWordChar(text[start - 1])) start--;
+                while (end < text.length && isWordChar(text[end])) end++;
+
+                const preciseWord = text.slice(start, end).trim();
+                if (preciseWord.length > 1) {
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    lookupInDict(preciseWord);
+                    return;
+                }
+            }
+
+            // 2. 备选方案：如果上述失败，尝试原有的 Selection 或直接 Target 获取
+            const selection = window.getSelection();
+            const selectedText = selection.toString().trim();
+            if (selectedText && selectedText.length < 50) {
+                lookupInDict(selectedText);
+                if (isIOS) selection.removeAllRanges();
+            }
+        });
+
+        pdfViewerContent.addEventListener('dblclick', (e) => {
+            const selection = window.getSelection();
+            const selectedText = selection.toString().trim();
+            if (selectedText) {
+                lookupInDict(selectedText);
+                if (document.body.classList.contains('ios-mode')) selection.removeAllRanges();
+            }
+        });
+
+        function toggleFullscreen() {
+            const el = document.documentElement;
+            const btn = document.getElementById('fullscreenBtn');
+            const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+            if (!isFullscreen) {
+                (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+                btn.textContent = '⛶ 退出';
+            } else {
+                (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+                btn.textContent = '⛶ 全屏';
+            }
+        }
+
+        document.addEventListener('fullscreenchange', () => {
+            const btn = document.getElementById('fullscreenBtn');
+            const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+            btn.textContent = isFullscreen ? '⛶ 退出' : '⛶ 全屏';
+        });
+        document.addEventListener('webkitfullscreenchange', () => {
+            const btn = document.getElementById('fullscreenBtn');
+            const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+            btn.textContent = isFullscreen ? '⛶ 退出' : '⛶ 全屏';
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            // 检测 iOS 并开启隐形点读模式
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            if (isIOS) document.body.classList.add('ios-mode');
+
+            // 动态注入针对安卓/三星系统底层的最强秒开通道指令
+            const picker = document.getElementById('pdf-file-picker');
+            if (picker) {
+                // 核心：强制调用系统原生“文档驱动”，直接锁定最近文档或特定安全渠道，死死卡住媒体扫描器
+                picker.setAttribute('type', 'file');
+                picker.setAttribute('accept', 'application/pdf');
+                // 强制要求系统使用 DOCUMENTS 渠道而不是 MEDIA 渠道
+                picker.removeAttribute('multiple');
+            }
+        });
+
+        // 窗口拉伸防抖动重绘
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                if (currentPdfDoc) {
+                    const savedPage = findCurrentVisiblePage();
+                    initVirtualRender(savedPage);
+                }
+            }, 300);
+        });
+    </script>
+</body>
+</html>

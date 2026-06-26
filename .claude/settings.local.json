@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check /Users/asen/Downloads/pdftext2/index.html)",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(sed '1d;$d')",
+      "Bash(node --check /tmp/check.js)",
+      "Bash(open *)",
+      "Bash(python3 -m http.server 8099)",
+      "Bash(curl -s http://localhost:8099/index.html)",
+      "Bash(kill %1)",
+      "Bash(awk '/<script>$/{flag=1; next} /<\\\\/script>/{flag=0} flag' /Users/asen/Downloads/pdftext2/index.html)",
+      "Bash(awk '/<script>$/{flag=1; next} /<\\\\/script>/{flag=0} flag' /Users/asen/Downloads/pdftext2/index2.html)",
+      "Bash(node --check /tmp/check2.js)"
+    ]
+  }
+}
